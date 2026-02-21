@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Airport PA PRO</title>
+
+<style>
+body {
+  font-family: Arial;
+  margin: 0;
+  background: #111;
+  color: #fff;
+  text-align: center;
+  background-size: cover;
+}
+
+header {
+  background: #222;
+  padding: 10px;
+}
+
+button {
+  padding: 10px;
+  margin: 5px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+select {
+  padding: 8px;
+  margin: 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #333;
+  color: #fff;
+  border: 1px solid #555;
+}
+
+.zone {
+  border: 1px solid #444;
+  margin: 10px;
+  padding: 10px;
+  display: inline-block;
+  width: 220px;
+}
+
+.playing {
+  background: green;
+}
+
+.stopped {
+  background: red;
+}
+</style>
+
+</head>
+<body>
+
+<header>
+<h2>✈ Airport PA System PRO</h2>
+<button onclick="setMode('master')">MASTER</button>
+<button onclick="setMode('client')">CLIENT</button>
+<div id="zoneSelector" style="display:none; margin-top:10px;">
+  <label>Listen to Zone: </label>
+  <select onchange="setSelectedZone(this.value)">
+    <option value="">All Zones</option>
+    <option value="Speaker 1">Speaker 1</option>
+    <option value="Speaker 2">Speaker 2</option>
+    <option value="Speaker 3">Speaker 3</option>
+    <option value="Speaker 4">Speaker 4</option>
+    <option value="Corridor">Corridor</option>
+  </select>
+</div>
+</header>
+
+<div id="controls" style="display:none;">
+<h3>Upload Audio</h3>
+<div id="uploads"></div>
+
+<h3>Background</h3>
+<input type="file" id="bgFile">
+<button onclick="uploadBG()">Set Background</button>
+</div>
+
+<div id="zones"></div>
+
+<script>
+const zones = ["Speaker 1","Speaker 2","Speaker 3","Speaker 4","Corridor"];
+let mode = "client";
+let selectedZone = null;  // For CLIENT to select which zone to listen to
+
+// Sanitize zone names to valid HTML IDs
+function sanitizeId(name) {
+  return name.replace(/\s+/g, '-').toLowerCase();
+}
+
+const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+let ws = new WebSocket(protocol + '//' + location.host);
+
+let audioFiles = {};
+let playing = {};
+let buttons = {};
+let currentAudio = {};  // Track Audio objects for each zone
+
+ws.onerror = (err) => {
+  console.error('WebSocket error:', err);
+};
+
+ws.onclose = () => {
+  console.log('WebSocket closed');
+};
+
+ws.onopen = () => {
+  console.log('WebSocket connected');
+};
+
+zones.forEach(z=>{
+  audioFiles[z]={audio1:null,audio2:null};
+});
+
+// MODE
+function setMode(m){
+  console.log('Setting mode to:', m);
+  mode = m;
+  const controlsDiv = document.getElementById("controls");
+  if(!controlsDiv) {
+    console.error('Could not find controls div');
+    return;
+  }
+  controlsDiv.style.display = (mode==="master") ? "block":"none";
+  
+  // Show/hide zone selector based on mode
+  const zoneSelector = document.getElementById("zoneSelector");
+  if(zoneSelector) {
+    zoneSelector.style.display = (mode==="client") ? "block":"none";
+  }
+  
+  // Filter zones based on selection
+  if(mode === "client") {
+    zones.forEach(zone => {
+      const zoneDiv = document.querySelector(`[data-zone="${zone}"]`);
+      if(zoneDiv) {
+        if(selectedZone && zone !== selectedZone) {
+          zoneDiv.style.display = "none";
+        } else {
+          zoneDiv.style.display = "inline-block";
+        }
+      }
+    });
+  } else {
+    // MASTER mode: show all zones
+    zones.forEach(zone => {
+      const zoneDiv = document.querySelector(`[data-zone="${zone}"]`);
+      if(zoneDiv) {
+        zoneDiv.style.display = "inline-block";
+      }
+    });
+  }
+  
+  console.log('Controls display set to:', controlsDiv.style.display);
+}
+
+// Set selected zone for CLIENT
+function setSelectedZone(z) {
+  selectedZone = z === "" ? null : z;
+  console.log('CLIENT selected zone:', selectedZone);
+  
+  // Show/hide zone controls based on selection
+  zones.forEach(zone => {
+    const zoneId = sanitizeId(zone);
+    const zoneDiv = document.querySelector(`[data-zone="${zone}"]`);
+    if(zoneDiv) {
+      // In client mode, only show selected zone (or all if none selected)
+      if(mode === "client" && selectedZone && zone !== selectedZone) {
+        zoneDiv.style.display = "none";
+      } else {
+        zoneDiv.style.display = "inline-block";
+      }
+    }
+  });
+}
+
+// BUILD UI
+const zonesDiv = document.getElementById("zones");
+const uploadDiv = document.getElementById("uploads");
+
+zones.forEach(z=>{
+  // Zone UI
+  const div = document.createElement("div");
+  div.className="zone";
+  div.setAttribute("data-zone", z);
+  const zoneId = sanitizeId(z);
+  div.innerHTML=`
+    <h3>${z}</h3>
+    <button id="${zoneId}-a1" class="stopped" onclick="play('${z}','audio1')">Audio 1</button>
+    <button id="${zoneId}-a2" class="stopped" onclick="play('${z}','audio2')">Audio 2</button>
+    <button onclick="stop('${z}')">Stop</button>
+  `;
+  zonesDiv.appendChild(div);
+
+  buttons[z]={
+    audio1: div.querySelector("#"+zoneId+"-a1"),
+    audio2: div.querySelector("#"+zoneId+"-a2")
+  };
+
+  // Upload UI
+  const up = document.createElement("div");
+  up.innerHTML=`
+    <h4>${z}</h4>
+    <input type="file" id="${zoneId}-audio1">
+    <button onclick="upload('${z}','audio1')">Upload A1</button>
+    <br>
+    <input type="file" id="${zoneId}-audio2">
+    <button onclick="upload('${z}','audio2')">Upload A2</button>
+  `;
+  uploadDiv.appendChild(up);
+});
+
+// SOCKET
+ws.onmessage = e=>{
+  const data = JSON.parse(e.data);
+
+  if(data.type==="sync"){
+    console.log('Sync received, state:', data.state);
+    // Initialize all zones if they don't exist
+    zones.forEach(z => {
+      if(!audioFiles[z]) audioFiles[z] = {audio1:null, audio2:null};
+    });
+    // Merge audio files
+    if(data.state.audio) {
+      Object.assign(audioFiles, data.state.audio);
+    }
+    Object.assign(playing, data.state.playing || {});
+    if(data.state.background){
+      document.body.style.backgroundImage = "url("+data.state.background+")";
+      console.log('Background loaded:', data.state.background);
+    }
+    updateButtons();
+  }
+
+  if(data.type==="audio"){
+    console.log('Audio received for zone:', data.zone, 'key:', data.audioKey);
+    if(!audioFiles[data.zone]) audioFiles[data.zone] = {audio1:null, audio2:null};
+    audioFiles[data.zone][data.audioKey]=data.data;
+    console.log('Audio stored, current files:', audioFiles[data.zone]);
+  }
+
+  if(data.type==="play"){
+    playing[data.zone]=data.audioKey;
+    // Only play audio if in CLIENT mode AND zone matches selection
+    if(mode === "client" && (selectedZone === null || selectedZone === data.zone)) {
+      playLocal(data.zone,data.audioKey);
+    } else {
+      updateButtons();
+    }
+  }
+
+  if(data.type==="stop"){
+    console.log('Stop message received for zone:', data.zone);
+    if(currentAudio[data.zone]) {
+      console.log('Stopping audio for zone:', data.zone);
+      currentAudio[data.zone].pause();
+      delete currentAudio[data.zone];
+    }
+    delete playing[data.zone];
+    updateButtons();
+    console.log('Playing:', playing);
+  }
+
+  if(data.type==="bg"){
+    // Server sends the file URL
+    if(data.img) {
+      document.body.style.backgroundImage = "url("+data.img+")";
+      console.log('Background updated:', data.img);
+    }
+  }
+};
+
+// PLAY
+function play(zone,key){
+  console.log('Play called for zone:', zone, 'key:', key);
+  if(ws.readyState !== WebSocket.OPEN) {
+    console.error('WebSocket not connected');
+    return;
+  }
+  ws.send(JSON.stringify({type:"play",zone:zone,audioKey:key}));
+}
+
+function stop(zone){
+  console.log('Stop called for zone:', zone);
+  if(ws.readyState !== WebSocket.OPEN) {
+    console.error('WebSocket not connected');
+    return;
+  }
+  console.log('Sending stop message for zone:', zone);
+  ws.send(JSON.stringify({type:"stop",zone:zone}));
+}
+
+function playLocal(zone,key){
+  console.log('playLocal called for zone:', zone, 'key:', key);
+  
+  // Stop any audio already playing in this zone
+  if(currentAudio[zone]) {
+    currentAudio[zone].pause();
+  }
+  
+  const audioObj = audioFiles[zone] ? audioFiles[zone][key] : null;
+  console.log('Audio object:', audioObj);
+  
+  // Handle both old format (url string) and new format (object with url property)
+  const src = typeof audioObj === 'string' ? audioObj : (audioObj && audioObj.url ? audioObj.url : null);
+  
+  console.log('Audio source:', src ? 'found' : 'not found');
+  if(!src) {
+    console.error('No audio source found for', zone, key);
+    return;
+  }
+
+  const audio = new Audio();
+  audio.crossOrigin = "anonymous";
+  // Add cache busting and streaming headers
+  audio.src = src + (src.includes('?') ? '&' : '?') + 't=' + Date.now();
+  // Lowering preload for better streaming on slow connections
+  audio.preload = "metadata";
+  currentAudio[zone] = audio;
+  
+  console.log('Audio object created, source:', src);
+  
+  // Add event listeners for debugging
+  audio.oncanplay = () => {
+    console.log('Audio can play');
+  };
+  
+  audio.onloadstart = () => {
+    console.log('Audio load started');
+  };
+  
+  audio.onerror = (e) => {
+    console.error('Audio error:', audio.error);
+  };
+  
+  // Try to play as soon as there's some data
+  audio.oncanplay = () => {
+    console.log('Audio buffered enough, attempting play...');
+    audio.play().catch(err => console.error('Play error on canplay:', err));
+  };
+  
+  // Also try immediately
+  audio.play().catch(err => {
+    console.warn('Immediate play failed, waiting for canplay event:', err);
+  });
+
+  updateButtons();
+
+  audio.onended=()=>{
+    console.log('Audio ended for zone:', zone);
+    delete playing[zone];
+    delete currentAudio[zone];
+    updateButtons();
+  };
+}
+
+// UPDATE BUTTON COLORS
+function updateButtons(){
+  zones.forEach(z=>{
+    ["audio1","audio2"].forEach(k=>{
+      buttons[z][k].className =
+        (playing[z]===k) ? "playing" : "stopped";
+    });
+  });
+}
+
+// UPLOAD AUDIO
+function upload(zone,key){
+  console.log('Upload called for zone:', zone, 'key:', key);
+  if(mode!=="master") {
+    console.log('Not in master mode');
+    return;
+  }
+  if(ws.readyState !== WebSocket.OPEN) {
+    console.log('WebSocket state:', ws.readyState);
+    alert('WebSocket not connected. Please refresh the page.');
+    return;
+  }
+  const zoneId = sanitizeId(zone);
+  console.log('Looking for file input:', zoneId+"-"+key);
+  const fileInput = document.getElementById(zoneId+"-"+key);
+  console.log('File input element:', fileInput);
+  const file = fileInput ? fileInput.files[0] : null;
+  console.log('Selected file:', file);
+  if(!file) {
+    alert('Please select a file first');
+    return;
+  }
+  const reader = new FileReader();
+
+  reader.onload=()=>{
+    console.log('File loaded, sending to server');
+    audioFiles[zone][key]=reader.result;
+    ws.send(JSON.stringify({
+      type:"audio",
+      zone:zone,
+      audioKey:key,
+      data:reader.result
+    }));
+    console.log('Audio data sent');
+  };
+
+  reader.onerror = () => {
+    console.error('FileReader error:', reader.error);
+  };
+
+  reader.readAsDataURL(file);
+}
+
+// BACKGROUND
+function uploadBG(){
+  if(ws.readyState !== WebSocket.OPEN) {
+    alert('WebSocket not connected. Please refresh the page.');
+    return;
+  }
+  const file = document.getElementById("bgFile").files[0];
+  if(!file) {
+    alert('Please select a file first');
+    return;
+  }
+  const reader = new FileReader();
+
+  reader.onload=()=>{
+    ws.send(JSON.stringify({type:"bg",img:reader.result}));
+  };
+
+  reader.readAsDataURL(file);
+}
+</script>
+
+</body>
+</html>
